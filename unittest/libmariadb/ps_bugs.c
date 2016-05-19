@@ -4147,7 +4147,77 @@ static int test_conc167(MYSQL *mysql)
   return OK;
 }
 
+static int test_conc177(MYSQL *mysql)
+{
+  MYSQL_STMT *stmt;
+  int rc;
+  MYSQL_BIND bind[2];
+  char *stmt_str= "SELECT a,b FROM t1";
+  char buf1[128], buf2[128];
+
+  rc= mysql_query(mysql, "DROP TABLE IF EXISTS t1");
+  check_mysql_rc(rc, mysql);
+
+  rc= mysql_query(mysql, "CREATE TABLE t1 (a double zerofill default 8.8,b float zerofill default 8.8)");
+  check_mysql_rc(rc, mysql);
+  rc= mysql_query(mysql, "INSERT INTO t1 VALUES (DEFAULT, DEFAULT)");
+  check_mysql_rc(rc, mysql);
+
+  stmt= mysql_stmt_init(mysql);
+  rc= mysql_stmt_prepare(stmt, stmt_str, strlen(stmt_str));
+  check_stmt_rc(rc, stmt);
+  rc= mysql_stmt_execute(stmt);
+  check_stmt_rc(rc, stmt);
+
+  memset(bind, 0, 2 * sizeof(MYSQL_BIND));
+  bind[0].buffer= &buf1;
+  bind[0].buffer_type= MYSQL_TYPE_STRING;
+  bind[0].buffer_length= 128;
+  bind[1].buffer= &buf2;
+  bind[1].buffer_type= MYSQL_TYPE_STRING;
+  bind[1].buffer_length= 128;
+
+  rc= mysql_stmt_bind_result(stmt, bind);
+  check_stmt_rc(rc, stmt);
+
+  rc= mysql_stmt_fetch(stmt);
+  mysql_stmt_close(stmt);
+
+  diag("buf1 %s\nbuf2 %s", buf1, buf2);
+
+  FAIL_IF(strcmp(buf1, "00000000000000000008.8"), "Expected 00000000000000000008.8");
+  FAIL_IF(strcmp(buf2, "0000000008.8"), "Expected 0000000008.8");
+
+  return OK;
+}
+
+static int test_conc179(MYSQL *mysql)
+{
+  MYSQL_STMT *stmt;
+  int rc;
+  char *stmtstr= "CREATE TABLE t1 (`blurb_id` int NOT NULL DEFAULT 0, `blurb` text default '', PRIMARY KEY (blurb_id)) ENGINE='FEDERATED' DEFAULT CHARSET=latin1 CONNECTION='mysql://root@127.0.0.1:$SLAVE_MYPORT/test/t1'";
+
+  rc= mysql_query(mysql, "set sql_mode=''");
+  check_mysql_rc(rc, mysql);
+
+  rc= mysql_query(mysql, "DROP TABLE IF EXISTS t1");
+  check_mysql_rc(rc, mysql);
+
+  stmt= mysql_stmt_init(mysql);
+  rc= mysql_stmt_prepare(stmt, stmtstr, strlen(stmtstr));
+  check_stmt_rc(rc, stmt);
+
+  FAIL_IF(mysql_warning_count(mysql) != 3, "expected 3 warnings");
+  FAIL_IF(mysql_stmt_warning_count(stmt) != 3, "expected 3 warnings");
+
+  mysql_stmt_close(stmt);
+
+  return OK;
+}
+
 struct my_tests_st my_tests[] = {
+  {"test_conc179", test_conc179, TEST_CONNECTION_DEFAULT, 0, NULL, NULL},
+  {"test_conc177", test_conc177, TEST_CONNECTION_DEFAULT, 0, NULL, NULL},
   {"test_conc167", test_conc167, TEST_CONNECTION_DEFAULT, 0, NULL, NULL},
   {"test_conc168", test_conc168, TEST_CONNECTION_DEFAULT, 0, NULL, NULL},
   {"test_conc155", test_conc155, TEST_CONNECTION_DEFAULT, 0, NULL, NULL},

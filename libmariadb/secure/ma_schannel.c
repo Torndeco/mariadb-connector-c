@@ -26,6 +26,7 @@
 #define MAX_SSL_ERR_LEN 100
 
 #define SCHANNEL_PAYLOAD(A) (A).cbMaximumMessage - (A).cbHeader - (A).cbTrailer
+void ma_schannel_set_win_error(MARIADB_PVIO *pvio);
 
 /* {{{ void ma_schannel_set_sec_error */
 void ma_schannel_set_sec_error(MARIADB_PVIO *pvio, DWORD ErrorNo)
@@ -33,38 +34,52 @@ void ma_schannel_set_sec_error(MARIADB_PVIO *pvio, DWORD ErrorNo)
   MYSQL *mysql= pvio->mysql;
   switch(ErrorNo) {
   case SEC_E_ILLEGAL_MESSAGE:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "The message received was unexpected or badly formatted");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: The message received was unexpected or badly formatted");
     break;
   case SEC_E_UNTRUSTED_ROOT:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Untrusted root certificate");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Untrusted root certificate");
     break;
   case SEC_E_BUFFER_TOO_SMALL:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Buffer too small");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Buffer too small");
     break;
   case SEC_E_CRYPTO_SYSTEM_INVALID:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Cipher is not supported");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Cipher is not supported");
     break;
   case SEC_E_INSUFFICIENT_MEMORY:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Out of memory");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Out of memory");
     break;
   case SEC_E_OUT_OF_SEQUENCE:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Invalid message sequence");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Invalid message sequence");
     break;
   case SEC_E_DECRYPT_FAILURE:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "An error occured during decrypting data");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: An error occured during decrypting data");
     break;
   case SEC_I_INCOMPLETE_CREDENTIALS:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Incomplete credentials");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Incomplete credentials");
     break;
   case SEC_E_ENCRYPT_FAILURE:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "An error occured during encrypting data");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: An error occured during encrypting data");
     break;
   case SEC_I_CONTEXT_EXPIRED:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Context expired: ");
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Context expired ");
+    break;
+  case SEC_E_ALGORITHM_MISMATCH:
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: no cipher match");
+    break;
+  case SEC_E_NO_CREDENTIALS:
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: no credentials");
+    break;
   case SEC_E_OK:
     break;
+  case SEC_E_INTERNAL_ERROR:
+    if (GetLastError())
+      ma_schannel_set_win_error(pvio);
+    else
+      pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "The Local Security Authority cannot be contacted");
+    break;
   default:
-    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Unknown SSL error (%d)", ErrorNo);
+    __debugbreak();
+    pvio->set_error(mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Unknown SSL error (0x%x)", ErrorNo);
   }
 }
 /* }}} */
@@ -74,7 +89,8 @@ void ma_schannel_set_win_error(MARIADB_PVIO *pvio)
 {
   ulong ssl_errno= GetLastError();
   char *ssl_error_reason= NULL;
-
+  char *p;
+  char buffer[256];
   if (!ssl_errno)
   {
     pvio->set_error(pvio->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Unknown SSL error");
@@ -84,8 +100,11 @@ void ma_schannel_set_win_error(MARIADB_PVIO *pvio)
   FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                 NULL, ssl_errno, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                 (LPTSTR) &ssl_error_reason, 0, NULL );
-  pvio->set_error(pvio->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, ssl_error_reason);
-
+  for (p = ssl_error_reason; *p; p++)
+    if (*p == '\n' || *p == '\r')
+      *p = 0;
+  snprintf(buffer, sizeof(buffer), "SSL connection error: %s",ssl_error_reason);
+  pvio->set_error(pvio->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, buffer);
   if (ssl_error_reason)
     LocalFree(ssl_error_reason);
   return;
@@ -134,7 +153,7 @@ static LPBYTE ma_schannel_load_pem(MARIADB_PVIO *pvio, const char *PemFileName, 
 
   if (!(*buffer_len = GetFileSize(hfile, NULL)))
   {
-     pvio->set_error(pvio->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Invalid pem format");
+     pvio->set_error(pvio->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Invalid pem format");
      goto end;
   }
 
@@ -499,7 +518,6 @@ SECURITY_STATUS ma_schannel_handshake_loop(MARIADB_PVIO *pvio, my_bool InitialRe
         OutBuffers.pvBuffer = NULL;
       }
     }
-
     /* check if we need to read more data */
     switch (rc) {
     case SEC_E_INCOMPLETE_MESSAGE:
@@ -536,7 +554,6 @@ SECURITY_STATUS ma_schannel_handshake_loop(MARIADB_PVIO *pvio, my_bool InitialRe
     default:
       if (FAILED(rc))
       {
-        ma_schannel_set_sec_error(pvio, rc);
         goto loopend;
       }
       break;
@@ -551,8 +568,11 @@ SECURITY_STATUS ma_schannel_handshake_loop(MARIADB_PVIO *pvio, my_bool InitialRe
     cbIoBuffer = 0;
   }
 loopend:
-  if (FAILED(rc)) 
+  if (FAILED(rc))
+  {
+    ma_schannel_set_sec_error(pvio, rc);
     DeleteSecurityContext(&sctx->ctxt);
+  }
   LocalFree(IoBuffer);
 
   return rc;
@@ -816,13 +836,13 @@ my_bool ma_schannel_verify_certs(SC_CTX *sctx, DWORD dwCertFlags)
     if (flags)
     {
       if ((flags & CERT_STORE_SIGNATURE_FLAG) != 0)
-        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Certificate signature check failed");
+        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Certificate signature check failed");
       else if ((flags & CERT_STORE_REVOCATION_FLAG) != 0)
-        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "certificate was revoked");
+        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: certificate was revoked");
       else if ((flags & CERT_STORE_TIME_VALIDITY_FLAG) != 0)
-        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "certificate has expired");
+        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: certificate has expired");
       else
-        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "Unknown error during certificate validation");
+        pvio->set_error(sctx->mysql, CR_SSL_CONNECTION_ERROR, SQLSTATE_UNKNOWN, "SSL connection error: Unknown error during certificate validation");
       return 0;
     }
   }
